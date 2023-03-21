@@ -192,7 +192,7 @@ if __name__ == "__main__":
             model_info[k] = v
 
     model = CLIP(**model_info)
-    convert_weights(model)    
+    convert_weights(model)
 
     # See https://discuss.pytorch.org/t/valueerror-attemting-to-unscale-fp16-gradients/81372
     if args.precision == "amp" or args.precision == "fp32":
@@ -245,6 +245,26 @@ if __name__ == "__main__":
         templates = template_dict[args.dataset]
     else:
         templates = template_dict['openai']
+    # templates = [
+    #     lambda c: f'a photo of a {c}.',
+    #     lambda c: f'a blurry photo of a {c}.',
+    #     lambda c: f'a black and white photo of a {c}.',
+    #     lambda c: f'a low contrast photo of a {c}.',
+    #     lambda c: f'a high contrast photo of a {c}.',
+    #     lambda c: f'a bad photo of a {c}.',
+    #     lambda c: f'a good photo of a {c}.',
+    #     lambda c: f'a photo of a small {c}.',
+    #     lambda c: f'a photo of a big {c}.',
+    #     lambda c: f'a photo of the {c}.',
+    #     lambda c: f'a blurry photo of the {c}.',
+    #     lambda c: f'a black and white photo of the {c}.',
+    #     lambda c: f'a low contrast photo of the {c}.',
+    #     lambda c: f'a high contrast photo of the {c}.',
+    #     lambda c: f'a bad photo of the {c}.',
+    #     lambda c: f'a good photo of the {c}.',
+    #     lambda c: f'a photo of the small {c}.',
+    #     lambda c: f'a photo of the big {c}.',
+    # ]
 
     # Make inference and evaluation
     print('Using classifier')
