@@ -174,13 +174,19 @@ def parse_args():
         action="store_true",
         help="Enable flash attention."
     )
-    # arguments for distributed training
     parser.add_argument(
-        "--local_rank", 
-        type=int, 
-        default=-1, 
-        help="For distributed training: local_rank."
+        "--accum-freq",
+        type=int,
+        default=1,
+        help="Update the model every --acum-freq steps."
     )
+    parser.add_argument(
+        "--gather-with-grad",
+        default=False,
+        action="store_true",
+        help="enable full distributed gradient for feature gather"
+    )
+    # arguments for distributed training
     parser.add_argument(
         "--skip-aggregate",
         default=False,
@@ -198,6 +204,25 @@ def parse_args():
         type=int, 
         default=123, 
         help="Random seed."
+    )
+    # arguments for distllation
+    parser.add_argument(
+        "--distllation",
+        default=False,
+        action="store_true",
+        help="If true, more information is logged."
+    )
+    parser.add_argument(
+        "--teacher-model-name",
+        type=str,
+        default=None,
+        help="The name of teacher model."
+    )
+    parser.add_argument(
+        "--kd_loss_weight",
+        type=float,
+        default=0.5,
+        help="Weight of KD loss."
     )
     args = parser.parse_args()
     args.aggregate = not args.skip_aggregate

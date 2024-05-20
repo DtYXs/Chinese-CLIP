@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import time
 from time import gmtime, strftime
+import importlib.util
 
 import torch
 from torch import optim
@@ -47,7 +48,7 @@ def main():
     args = parse_args()
 
     # Set distributed group
-    args.local_device_rank = max(args.local_rank, 0)
+    args.local_device_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(args.local_device_rank)
     args.device = torch.device("cuda", args.local_device_rank)
 
@@ -107,9 +108,13 @@ def main():
 
     if args.grad_checkpointing:
         assert not torch_version_str_compare_lessequal(torch.__version__, "1.8.0"), \
-            "Currently our grad_checkpointing is not compatible with torch version <= 1.8.0."        
+            "Currently our grad_checkpointing is not compatible with torch version <= 1.8.0."
         model.set_grad_checkpointing()
         logging.info("Grad-checkpointing activated.")
+
+    if args.use_flash_attention:
+        assert importlib.util.find_spec("flash_attn"), "flash_attn is not installed."
+        logging.info("Using FlashAttention.")
 
     if args.use_bn_sync:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -128,6 +133,9 @@ def main():
     # In other cases, set find_unused_parameters to False
     find_unused_parameters = torch_version_str_compare_lessequal(torch.__version__, "1.8.0")
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_device_rank], find_unused_parameters=find_unused_parameters)
+    # Have to set this when activating grad checkpointing in Pytorch >= 2.0.0
+    if args.grad_checkpointing and not torch_version_str_compare_lessequal(torch.__version__, "1.14.0"):
+        model._set_static_graph()
 
     if args.precision == "fp16":
         convert_weights(model)
@@ -158,10 +166,10 @@ def main():
         )
         num_batches = data["train"].dataloader.num_batches
         if args.max_steps is not None:
-            args.max_epochs = ceil(args.max_steps / num_batches)
+            args.max_epochs = ceil(args.max_steps * args.accum_freq / num_batches)
         else:
             assert args.max_epochs is not None and args.max_epochs > 0
-            args.max_steps = num_batches * args.max_epochs
+            args.max_steps = (num_batches // args.accum_freq) * args.max_epochs
         total_steps = args.max_steps
         scheduler = cosine_lr(optimizer, args.lr, args.warmup, total_steps)
 
@@ -213,7 +221,7 @@ def main():
             model.load_state_dict(sd)
             # Restore the epoch and steps info, reload the dataset and dataloader for the resume epoch
             if not args.reset_data_offset:
-                start_epoch = checkpoint["epoch"] - 1
+                start_epoch = checkpoint["epoch"]
                 steps = checkpoint["step"]
                 data = get_data(args, 
                                 epoch_id=start_epoch, 
@@ -235,10 +243,59 @@ def main():
     # only do so if it is the 0th worker.
     args.should_save = (args.logs is not None and args.logs != '' and args.logs.lower() != 'none') and is_master(args)
 
+    # load teacher model to distllation
+    if args.distllation:
+        try:
+            from modelscope.models import Model
+        except:
+            raise ImportError("modelscope is not installed. Please install it by `pip install modelscope`.")
+
+        teacher_model_dict = {
+            "damo/multi-modal_team-vit-large-patch14_multi-modal-similarity" : {"model": "image_model"},
+            "damo/multi-modal_rleg-vit-large-patch14" : {"model": "encode_image"},
+            "damo/multi-modal_clip-vit-huge-patch14_zh" : {"clip_model": "encode_image"},
+            "damo/multi-modal_clip-vit-large-patch14_zh" : {"clip_model": "encode_image"},
+        }
+        assert args.teacher_model_name in teacher_model_dict, "Error: Valid teacher model name has not been built."
+
+        try:
+            teacher_model = Model.from_pretrained(args.teacher_model_name)
+        except Exception as e:
+            if "Unexpected key(s) in state_dict" in str(e):
+                error_message = (
+                    "An error occurred while loading the model: {}\n"
+                    "Maybe you should update modelscope. ".format(e)
+                )
+                raise RuntimeError(error_message)
+
+        for k, v in teacher_model.state_dict().items():
+            v.requires_grad = False
+        
+        # mapping different extract_features function to same name
+        mapping = teacher_model_dict[args.teacher_model_name]
+        if "model" in mapping and hasattr(teacher_model, "model"):
+            model_instance = getattr(teacher_model, "model")
+            if hasattr(model_instance, mapping["model"]):
+                setattr(teacher_model, "get_feature", getattr(model_instance, mapping["model"]))
+        elif "clip_model" in mapping and hasattr(teacher_model, "clip_model"):
+            model_instance = getattr(teacher_model, "clip_model")
+            if hasattr(model_instance, mapping["clip_model"]):
+                setattr(teacher_model, "get_feature", getattr(model_instance, mapping["clip_model"]))
+
+        teacher_model.cuda(args.local_device_rank)
+        teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.local_device_rank])
+        logging.info(f"Teacher model loaded from {args.teacher_model_name}")
+    else:
+        teacher_model = None
+
+
     for epoch in range(start_epoch, args.max_epochs):
         if is_master(args) == 0:
             logging.info(f'Start epoch {epoch + 1}')
-        num_steps_this_epoch = train(model, data, epoch, optimizer, scaler, scheduler, args, steps)
+        if args.distllation:
+            num_steps_this_epoch = train(model, data, epoch, optimizer, scaler, scheduler, args, steps, teacher_model)
+        else:
+            num_steps_this_epoch = train(model, data, epoch, optimizer, scaler, scheduler, args, steps)
         steps += num_steps_this_epoch
 
         if args.val_data is not None and args.valid_epoch_interval is not None and ((epoch + 1) % args.valid_epoch_interval) == 0:

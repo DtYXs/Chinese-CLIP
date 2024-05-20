@@ -55,6 +55,8 @@ valid_epoch_interval=1
 vision_model=ViT-B-16
 text_model=RoBERTa-wwm-ext-base-chinese
 use_augment="--use-augment"
+distllation="--distllation"
+teacher_model_name="damo/multi-modal_team-vit-large-patch14_multi-modal-similarity"
 # use_augment=""
 
 python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} --nnodes=${WORKER_CNT} --node_rank=${RANK} \
@@ -82,4 +84,6 @@ python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} 
           --max-epochs=${max_epochs} \
           --vision-model=${vision_model} \
           ${use_augment} \
-          --text-model=${text_model}
+          --text-model=${text_model} \
+          ${distllation} \
+          --teacher-model-name=${teacher_model_name} \
